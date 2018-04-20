@@ -6,6 +6,7 @@
      * @param {object}
      *   @property {string} displayName - name to be displayed in dialog
      *   @property {object} client - Braintree Client
+     *   @property {function} address noramlizer - Such as region to two letter state
      *   @property {object} applePay - Settings for apple pay
      *     @property {object} client - Braintree Apple pay Client
      *   @property {object} googlePay - settings for google pay
@@ -21,7 +22,12 @@
       var rawPaymentResponse
       let paymentMethods = this.buildSupportedPayments(config)
       var paymentRequest = new window.PaymentRequest(paymentMethods,paymentDetails,options)
-      paymentRequest.addEventListener('shippingaddresschange', shippingChangeHandler)
+      paymentRequest.addEventListener('shippingaddresschange', e => {
+        if(config.addressNormalizer){
+          config.addressNormalizer(e.target.shippingAddress)
+        }
+        shippingChangeHandler(e)
+      })
 
       if(config.applePay){
         paymentRequest.addEventListener('merchantvalidation', function(event){
@@ -33,6 +39,10 @@
       }
       return paymentRequest.show().then((response) => {
         rawPaymentResponse = response
+        if(config.addressNormalizer){
+            config.addressNormalizer(rawPaymentResponse.details.billingAddress)
+            config.addressNormalizer(rawPaymentResponse.shippingAddress)
+        }
         switch(response.methodName.toLowerCase()){
           /*
             Due to BUGS in browsers need the following:
@@ -169,7 +179,7 @@
           billingAddress: {
             company: billingAddress.organization,
             locality: billingAddress.city,
-            region: billingAddress.region,
+            region: billingAddress.state || billingAddress.region,
             postalCode: billingAddress.postalCode,
             streetAddress: billingAddress.addressLine[0],
             extendedAddress: billingAddress.addressLine[1],
