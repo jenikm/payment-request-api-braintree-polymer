@@ -1,0 +1,184 @@
+<script>
+
+  window.PaymentRequestBehavior = {
+
+     /**
+     * @param {object}
+     *   @property {string} displayName - name to be displayed in dialog
+     *   @property {object} client - Braintree Client
+     *   @property {object} applePay - Settings for apple pay
+     *     @property {object} client - Braintree Apple pay Client
+     *   @property {object} googlePay - settings for google pay
+     *     @property {object} config - Braintree Apple pay Client
+     *       @property {string} environment - TEST | PRODUCTION
+     *       @property {string} merchantId - merchant id provided from Google
+     * @param {object} paymentDetails - see PaymentRequestApi
+     * @param {object} options - standard Payment Request API options parameter
+     * @param {function} shippingChangeHandler - shipping change handler
+     */
+    initializePaymentRequest(config, paymentDetails, options, shippingChangeHandler) {
+
+      var rawPaymentResponse
+      let paymentMethods = this.buildSupportedPayments(config)
+      var paymentRequest = new window.PaymentRequest(paymentMethods,paymentDetails,options)
+      paymentRequest.addEventListener('shippingaddresschange', shippingChangeHandler)
+
+      if(config.applePay){
+        paymentRequest.addEventListener('merchantvalidation', function(event){
+          event.complete(config.applePay.client.performValidation({
+            validationURL: event.validationURL,
+            displayName: config.displayName
+          }))
+        })
+      }
+      return paymentRequest.show().then((response) => {
+        rawPaymentResponse = response
+        switch(response.methodName.toLowerCase()){
+          /*
+            Due to BUGS in browsers need the following:
+              Samsung passes card types (visa, etc.)
+              Chrome on IOS passess basic_cart
+          */
+          case 'visa':
+          case 'discover':
+          case 'mastercard':
+          case 'jcb':
+          case 'mex':
+          case 'amex':
+          case 'basic_card':
+          case 'basic-card':
+            return this.tokenizeCard(config.client, response)
+          case 'https://google.com/pay':
+            return this.tokenizeGooglePay(response)
+          case 'https://apple.com/apple-pay':
+            return this.tokenizeApplePay(config.applePay.client, response)
+          default:
+            throw new Error(`Unsupported payment method: ${response.methodName}`)
+        }
+      })
+        .then(merchantResponse => {
+          merchantResponse.details.rawPaymentResponse = rawPaymentResponse;
+          return {rawPaymentResponse, merchantResponse}
+        }).catch(e => {
+          e.rawPaymentResponse = rawPaymentResponse
+          throw e
+        })
+    },
+
+    buildBasicCardConfig(){
+      return {supportedMethods: 'basic-card'}
+    },
+
+    buildApplePayConfig(applePay){
+      var requestDetails = {
+        version: 3,
+        merchantIdentifier: applePay.merchantIdentifier,
+        merchantCapabilities: [ 'supports3DS' ],
+      }
+
+      return {
+        supportedMethods: 'https://apple.com/apple-pay',
+        data: applePay.createPaymentRequest(requestDetails)
+      }
+    },
+
+    buildSupportedPayments({client, applePay, googlePay}){
+      let paymentMethods = []
+      paymentMethods.push(this.buildBasicCardConfig())
+      paymentMethods.push(this.buildGooglePayConfig(client, googlePay.config))
+      if(applePay)
+        paymentMethods.push(this.buildApplePayConfig(applePay.client))
+      return paymentMethods
+    },
+
+    buildGooglePayConfig(client, {environment, merchantId}){
+      var configuration = client.getConfiguration()
+      var metadata = configuration.analyticsMetadata
+      var androidPayConfiguration = configuration.gatewayConfiguration.androidPay
+      var data = {
+        environment: environment || 'TEST',
+        merchantId: merchantId || '18278000977346790994',
+        apiVersion: 1,
+        allowedPaymentMethods: ['CARD', 'TOKENIZED_CARD'],
+        paymentMethodTokenizationParameters: {
+          tokenizationType: 'PAYMENT_GATEWAY',
+          parameters: {
+            gateway: 'braintree',
+            'braintree:merchantId': configuration.gatewayConfiguration.merchantId,
+            'braintree:authorizationFingerprint': androidPayConfiguration.googleAuthorizationFingerprint,
+            'braintree:apiVersion': 'v1',
+            'braintree:sdkVersion': client.version,
+            'braintree:metadata': JSON.stringify({
+              source: metadata.source,
+              integration: metadata.integration,
+              sessionId: metadata.sessionId,
+              version: 1,
+              platform: metadata.platform
+            })
+          }
+        },
+        cardRequirements: {
+          allowedCardNetworks: androidPayConfiguration.supportedNetworks.map(c => c.toUpperCase())
+        }
+      }
+
+      if (configuration.authorizationType === 'TOKENIZATION_KEY') {
+        data.paymentMethodTokenizationParameters.parameters['braintree:clientKey'] = configuration.authorization
+      }
+      return {supportedMethods: 'https://google.com/pay', data}
+    },
+
+    tokenizeCard(client, paymentResponse){
+      return client.request({
+        endpoint: 'payment_methods/credit_cards',
+        method: 'post',
+        data: this.formatPaymentResponse(paymentResponse)
+      }).then(response => response.creditCards[0])
+    },
+
+    tokenizeGooglePay(paymentResponse){
+      let parsedResponse = JSON.parse(paymentResponse.details.paymentMethodToken.token)
+      if(parsedResponse.error)
+        return Promise.reject(parsedResponse.error)
+      else
+        return parsedResponse.androidPayCards[0]
+    },
+
+    tokenizeApplePay(applePay, response){
+      return applePay.tokenize({
+        token: response.details.token
+      })
+    },
+
+    formatPaymentResponse(rawPaymentResponse) {
+      var billingAddress
+      var data = {
+        creditCard: {
+          number: rawPaymentResponse.details.cardNumber,
+          cardholderName: rawPaymentResponse.details.cardholderName,
+          expirationMonth: rawPaymentResponse.details.expiryMonth,
+          expirationYear: rawPaymentResponse.details.expiryYear,
+          cvv: rawPaymentResponse.details.cardSecurityCode
+        }
+      }
+
+      billingAddress = rawPaymentResponse.details.billingAddress
+
+      if (billingAddress) {
+        data.creditCard = Object.assign(data.creditCard, {
+          billingAddress: {
+            company: billingAddress.organization,
+            locality: billingAddress.city,
+            region: billingAddress.region,
+            postalCode: billingAddress.postalCode,
+            streetAddress: billingAddress.addressLine[0],
+            extendedAddress: billingAddress.addressLine[1],
+            countryCodeAlpha2: billingAddress.country
+          }
+        })
+      }
+      return data
+    }
+  }
+
+</script>
