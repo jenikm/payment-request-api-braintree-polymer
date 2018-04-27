@@ -19,7 +19,7 @@
      */
     initializePaymentRequest(config, paymentDetails, options, shippingChangeHandler) {
 
-      var rawPaymentResponse
+      var paymentRequestStatus, rawPaymentResponse
       let paymentMethods = this.buildSupportedPayments(config)
       var paymentRequest = new window.PaymentRequest(paymentMethods,paymentDetails,options)
       paymentRequest.addEventListener('shippingaddresschange', e => {
@@ -37,11 +37,12 @@
           }))
         })
       }
-      return paymentRequest.show().then((response) => {
-        rawPaymentResponse = response
+      return paymentRequest.show().then(response => {
+        rawPaymentResponse = JSON.parse(JSON.stringify(response))
+        paymentRequestStatus = response
         if(config.addressNormalizer){
-            config.addressNormalizer(rawPaymentResponse.details.billingAddress)
-            config.addressNormalizer(rawPaymentResponse.shippingAddress)
+          config.addressNormalizer(rawPaymentResponse.details.billingAddress)
+          config.addressNormalizer(rawPaymentResponse.shippingAddress)
         }
         switch(response.methodName.toLowerCase()){
           /*
@@ -57,22 +58,31 @@
           case 'amex':
           case 'basic_card':
           case 'basic-card':
-            return this.tokenizeCard(config.client, response)
+            return this.tokenizeCard(config.client, rawPaymentResponse)
           case 'https://google.com/pay':
-            return this.tokenizeGooglePay(response)
+            return this.tokenizeGooglePay(rawPaymentResponse)
           case 'https://apple.com/apple-pay':
-            return this.tokenizeApplePay(config.applePay.client, response)
+            return this.tokenizeApplePay(config.applePay.client, rawPaymentResponse)
           default:
             throw new Error(`Unsupported payment method: ${response.methodName}`)
         }
       })
         .then(merchantResponse => {
+          this._obfuscate(rawPaymentResponse)
           merchantResponse.details.rawPaymentResponse = rawPaymentResponse;
-          return {rawPaymentResponse, merchantResponse}
+          merchantResponse.paymentRequestStatus = paymentRequestStatus
+          return merchantResponse
         }).catch(e => {
-          e.rawPaymentResponse = rawPaymentResponse
+          e.paymentRequestStatus = paymentRequestStatus
           throw e
         })
+    },
+
+    _obfuscate(response){
+      let blacklistedFields = ["cardNumber", "expiryMonth", "expiryYear", "cardSecurityCode"]
+      blacklistedFields.forEach(f => {
+        delete response.details[f]
+      })
     },
 
     buildBasicCardConfig(){
